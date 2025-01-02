@@ -1,55 +1,46 @@
-import React from 'react'
-import { Routes, Route, useNavigate } from 'react-router-dom'
-import { Box, AppBar, Toolbar, Typography, Button } from '@mui/material'
-import Dashboard from './Dashboard'
+import { Box } from '@mui/material'
+import PropTypes from 'prop-types'
+import { useState } from 'react'
 import Map from './Map'
+import Sidebar from './Sidebar'
 
-function MainLayout() {
-  const navigate = useNavigate()
+function MainLayout({ activeLayers, onLayerToggle }) {
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
-      {/* Only show AppBar on the dashboard page */}
-      <Routes>
-        <Route path="/" element={
-          <>
-            <AppBar position="static" sx={{ bgcolor: 'rgba(0, 0, 0, 0.8)', backdropFilter: 'blur(10px)' }}>
-              <Toolbar>
-                <Typography 
-                  variant="h6" 
-                  component="div" 
-                  sx={{ 
-                    flexGrow: 1, 
-                    cursor: 'pointer',
-                    fontWeight: 600,
-                    letterSpacing: '0.5px'
-                  }}
-                  onClick={() => navigate('/')}
-                >
-                  Game Changer
-                </Typography>
-                <Button 
-                  color="inherit" 
-                  onClick={() => navigate('/map')}
-                  sx={{
-                    fontWeight: 500,
-                    letterSpacing: '0.5px',
-                    '&:hover': {
-                      bgcolor: 'rgba(255, 255, 255, 0.1)'
-                    }
-                  }}
-                >
-                  Launch Demo
-                </Button>
-              </Toolbar>
-            </AppBar>
-            <Dashboard />
-          </>
-        } />
-        <Route path="/map" element={<Map />} />
-      </Routes>
+    <Box sx={{ display: 'flex', height: '100vh', width: '100vw', overflow: 'hidden' }}>
+      <Sidebar 
+        activeLayers={activeLayers} 
+        onLayerToggle={onLayerToggle}
+        isOpen={isSidebarOpen}
+        onToggle={() => setIsSidebarOpen(!isSidebarOpen)}
+        sx={{
+          width: 240,
+          flexShrink: 0,
+          backgroundColor: '#262626',
+          borderRight: '1px solid rgba(255, 255, 255, 0.12)',
+          zIndex: 1200
+        }}
+      />
+      <Box sx={{ 
+        flexGrow: 1, 
+        position: 'relative', 
+        height: '100%',
+        marginLeft: isSidebarOpen ? 0 : -240,
+        transition: 'margin-left 0.3s ease'
+      }}>
+        <Map 
+          activeLayers={activeLayers}
+          onLayerToggle={onLayerToggle}
+        />
+      </Box>
     </Box>
   )
 }
 
-export default MainLayout 
+MainLayout.propTypes = {
+  activeLayers: PropTypes.object.isRequired,
+  onLayerToggle: PropTypes.func.isRequired
+}
+
+export default MainLayout

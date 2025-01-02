@@ -1,338 +1,388 @@
-import React, { useState, useRef, useEffect } from 'react'
-import { Box, Typography } from '@mui/material'
-import { 
-  GoogleMap, 
-  useLoadScript, 
-  Marker, 
-  InfoWindow,
-  MarkerClusterer,
-  Data 
-} from '@react-google-maps/api'
-import FiltersPanel from './FiltersPanel'
-import { fetchChargingStations } from '../services/nrelService'
-import { fetchDemographicData } from '../services/censusService'
-import { fetchPropertyData } from '../services/propertyService'
-import { fetchUtilityData } from '../services/utilityService'
-import { fetchSolarPermits } from '../services/permitService'
-
-// Move these constants outside of the component
-const libraries = ['places', 'visualization']
+import { useCallback, useState, useEffect } from 'react';
+import { Box, ToggleButton, ToggleButtonGroup, InputAdornment, IconButton, Collapse, Paper, Typography } from '@mui/material';
+import { GoogleMap, useLoadScript, Autocomplete } from '@react-google-maps/api';
+import PropTypes from 'prop-types';
+import TextField from '@mui/material/TextField';
+import SearchIcon from '@mui/icons-material/Search';
+import MapIcon from '@mui/icons-material/Map';
+import SatelliteIcon from '@mui/icons-material/Satellite';
+import CloseIcon from '@mui/icons-material/Close';
 
 const mapContainerStyle = {
-  width: 'calc(100% - 250px)',
-  height: '100vh',
-  marginLeft: '250px'
-}
+  width: '100%',
+  height: '100%'
+};
 
 const center = {
   lat: 42.1015,
   lng: -72.5898
-}
+};
 
 const options = {
-  mapTypeControl: true,
-  scaleControl: true,
-  streetViewControl: true,
-  rotateControl: true,
-  fullscreenControl: true,
-  styles: [
-    {
-      featureType: "all",
-      elementType: "labels",
-      stylers: [{ visibility: "on" }]
+  mapTypeControl: false,
+  streetViewControl: false,
+  fullscreenControl: false,
+  mapTypeId: 'satellite'
+};
+
+// Keep libraries constant to prevent reloads
+const libraries = ['places', 'geometry', 'drawing'];
+
+async function fetchNeighborhoodBoundary(map, placeName) {
+  const geocoder = new window.google.maps.Geocoder();
+  
+  try {
+    const response = await new Promise((resolve, reject) => {
+      geocoder.geocode({
+        address: placeName,
+        componentRestrictions: { country: 'US' }
+      }, (results, status) => {
+        if (status === 'OK') {
+          resolve(results);
+        } else {
+          reject(status);
+        }
+      });
+    });
+
+    if (response[0].geometry) {
+      const place = response[0];
+      
+      // Create a polygon to represent the neighborhood
+      const paths = await new Promise(resolve => {
+        const service = new window.google.maps.places.PlacesService(map);
+        service.getDetails({
+          placeId: place.place_id,
+          fields: ['geometry', 'name', 'formatted_address', 'types']
+        }, (result, status) => {
+          if (status === 'OK' && result.geometry && result.geometry.viewport) {
+            // Get the viewport corners
+            const ne = result.geometry.viewport.getNorthEast();
+            const sw = result.geometry.viewport.getSouthWest();
+            
+            // Create a more natural-looking boundary by adding intermediate points
+            const numPoints = 12;
+            const paths = [];
+            
+            for (let i = 0; i <= numPoints; i++) {
+              const lat = sw.lat() + (ne.lat() - sw.lat()) * (Math.sin(i * Math.PI / numPoints) + 1) / 2;
+              const lng = sw.lng() + (ne.lng() - sw.lng()) * (Math.cos(i * Math.PI / numPoints) + 1) / 2;
+              paths.push([lng, lat]);
+            }
+            
+            resolve(paths);
+          } else {
+            // Fallback to viewport bounds if detailed geometry isn't available
+            const ne = place.geometry.viewport.getNorthEast();
+            const sw = place.geometry.viewport.getSouthWest();
+            resolve([
+              [sw.lng(), ne.lat()],
+              [ne.lng(), ne.lat()],
+              [ne.lng(), sw.lat()],
+              [sw.lng(), sw.lat()],
+              [sw.lng(), ne.lat()]
+            ]);
+          }
+        });
+      });
+
+      // Create GeoJSON feature
+      const feature = {
+        type: 'Feature',
+        properties: {
+          name: place.address_components[0].long_name,
+          placeId: place.place_id,
+          // Add mock stats for now - these would come from your database or Census API
+          medianIncome: '$45,000',
+          homeownership: '65%',
+          avgHomeValue: '$275,000'
+        },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [paths]
+        }
+      };
+
+      // Add the feature to the map's data layer
+      map.data.addGeoJson({
+        type: 'FeatureCollection',
+        features: [feature]
+      });
+
+      return feature;
     }
-  ],
-  mapTypeId: 'hybrid'
+  } catch (error) {
+    console.error('Error fetching neighborhood:', error);
+    return null;
+  }
 }
 
-// Memoize the callback functions
-const createHandleBoundsChanged = (mapRef, handleDataFetch) => () => {
-  if (!mapRef.current) return
-
-  const bounds = mapRef.current.getBounds()
-  handleDataFetch({
-    minLat: bounds.getSouthWest().lat(),
-    maxLat: bounds.getNorthEast().lat(),
-    minLng: bounds.getSouthWest().lng(),
-    maxLng: bounds.getNorthEast().lng()
-  })
-}
-
-function Map() {
+function Map({ activeLayers, onLayerToggle }) {
   const { isLoaded, loadError } = useLoadScript({
     googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY,
     libraries
-  })
+  });
 
-  const [chargingStations, setChargingStations] = useState([])
-  const [demographicData, setDemographicData] = useState(null)
-  const [properties, setProperties] = useState([])
-  const [solarPermits, setSolarPermits] = useState([])
-  const [utilityBoundaries, setUtilityBoundaries] = useState(null)
-  const [selectedMarker, setSelectedMarker] = useState(null)
-  const [activeLayers, setActiveLayers] = useState({
-    leads: true,
-    neighborhoodInsights: false,
-    utilityBoundaries: false,
-    solarPermits: false,
-    moveIns: false,
-    cityBoundaries: false,
-    spanishSpeakers: false,
-    manufacturedHomes: false,
-    evOwners: false
-  })
+  const [map, setMap] = useState(null);
+  const [autocomplete, setAutocomplete] = useState(null);
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [selectedFeature, setSelectedFeature] = useState(null);
+  const [infoWindowPosition, setInfoWindowPosition] = useState(null);
 
-  const mapRef = useRef()
-  
-  const onMapLoad = React.useCallback((map) => {
-    mapRef.current = map
-  }, [])
+  const onLoad = useCallback((map) => {
+    setMap(map);
+  }, []);
 
-  const handleDataFetch = React.useCallback(async (bounds) => {
-    try {
-      const fetchPromises = [];
-      
-      if (activeLayers.evOwners) {
-        fetchPromises.push(fetchChargingStations(bounds));
-      } else {
-        fetchPromises.push(Promise.resolve([]));
+  const onAutocompleteLoad = useCallback((autocomplete) => {
+    setAutocomplete(autocomplete);
+  }, []);
+
+  const onPlaceChanged = useCallback(() => {
+    if (autocomplete) {
+      const place = autocomplete.getPlace();
+      if (place.geometry) {
+        const location = {
+          lat: place.geometry.location.lat(),
+          lng: place.geometry.location.lng()
+        };
+        map?.panTo(location);
+        map?.setZoom(17);
+        setIsSearchOpen(false);
       }
-
-      if (activeLayers.utilityBoundaries) {
-        fetchPromises.push(fetchUtilityData(bounds));
-      } else {
-        fetchPromises.push(Promise.resolve(null));
-      }
-
-      if (activeLayers.leads) {
-        fetchPromises.push(fetchPropertyData(bounds));
-      } else {
-        fetchPromises.push(Promise.resolve([]));
-      }
-
-      if (activeLayers.solarPermits) {
-        fetchPromises.push(fetchSolarPermits(bounds));
-      } else {
-        fetchPromises.push(Promise.resolve([]));
-      }
-
-      if (activeLayers.spanishSpeakers || activeLayers.cityBoundaries) {
-        fetchPromises.push(fetchDemographicData(bounds));
-      } else {
-        fetchPromises.push(Promise.resolve(null));
-      }
-
-      const [stations, utilities, propertyData, permitData, demographic] = await Promise.all(fetchPromises);
-      
-      setChargingStations(stations);
-      setUtilityBoundaries(utilities);
-      setProperties(propertyData);
-      setSolarPermits(permitData);
-      setDemographicData(demographic);
-    } catch (error) {
-      console.error('Error fetching data:', error);
     }
-  }, [activeLayers]);
+  }, [autocomplete, map]);
 
-  const handleBoundsChanged = React.useCallback(
-    createHandleBoundsChanged(mapRef, handleDataFetch),
-    [handleDataFetch]
-  );
-
-  // Refetch data when active layers change
+  // Load neighborhood boundaries when map is ready and layer is active
   useEffect(() => {
-    if (mapRef.current) {
-      const bounds = mapRef.current.getBounds();
-      handleDataFetch({
-        minLat: bounds.getSouthWest().lat(),
-        maxLat: bounds.getNorthEast().lat(),
-        minLng: bounds.getSouthWest().lng(),
-        maxLng: bounds.getNorthEast().lng()
-      });
-    }
-  }, [activeLayers, handleDataFetch]);
+    if (!map || !activeLayers.neighborhoodInsights) return;
 
-  if (loadError) return <div>Error loading maps</div>
-  if (!isLoaded) return <div>Loading maps</div>
+    const loadNeighborhoods = async () => {
+      // Clear existing features
+      map.data.forEach(feature => map.data.remove(feature));
+
+      // List of neighborhoods to fetch
+      const neighborhoodsList = [
+        'Downtown Springfield, MA',
+        'Forest Park, Springfield, MA',
+        'Liberty Heights, Springfield, MA',
+        'Indian Orchard, Springfield, MA',
+        'East Springfield, MA',
+        'Pine Point, Springfield, MA',
+        'Sixteen Acres, Springfield, MA',
+        'South End, Springfield, MA',
+        'North End, Springfield, MA',
+        'East Forest Park, Springfield, MA'
+      ];
+
+      try {
+        await Promise.all(
+          neighborhoodsList.map(name => fetchNeighborhoodBoundary(map, name))
+        );
+
+        // Style the boundaries
+        map.data.setStyle({
+          fillColor: '#ED6C02',
+          fillOpacity: 0.1,
+          strokeColor: '#ED6C02',
+          strokeWeight: 2,
+          strokeOpacity: 0.8
+        });
+
+        // Add click listener for info windows
+        map.data.addListener('click', (event) => {
+          const feature = event.feature;
+          const bounds = new window.google.maps.LatLngBounds();
+          
+          feature.getGeometry().forEachLatLng(latLng => {
+            bounds.extend(latLng);
+          });
+          
+          setSelectedFeature({
+            name: feature.getProperty('name'),
+            stats: {
+              medianIncome: feature.getProperty('medianIncome'),
+              homeownership: feature.getProperty('homeownership'),
+              avgHomeValue: feature.getProperty('avgHomeValue')
+            }
+          });
+          setInfoWindowPosition(bounds.getCenter());
+        });
+
+        // Add hover effects
+        map.data.addListener('mouseover', (event) => {
+          map.data.overrideStyle(event.feature, {
+            fillOpacity: 0.3,
+            strokeWeight: 3
+          });
+        });
+
+        map.data.addListener('mouseout', (event) => {
+          map.data.revertStyle(event.feature);
+        });
+      } catch (error) {
+        console.error('Error loading neighborhoods:', error);
+      }
+    };
+
+    loadNeighborhoods();
+  }, [map, activeLayers.neighborhoodInsights]);
+
+  // Update map type
+  useEffect(() => {
+    if (!map) return;
+    map.setMapTypeId(activeLayers.aerial ? 'satellite' : 'roadmap');
+  }, [map, activeLayers.aerial]);
+
+  if (loadError) return <div>Error loading maps</div>;
+  if (!isLoaded) return <div>Loading maps...</div>;
 
   return (
-    <Box sx={{ position: 'relative', height: '100vh', width: '100%', overflow: 'hidden' }}>
-      <FiltersPanel 
-        activeLayers={activeLayers}
-        onLayersChange={setActiveLayers}
-      />
+    <Box sx={{ position: 'relative', height: '100%', width: '100%', overflow: 'hidden' }}>
+      <Box sx={{ position: 'absolute', top: 20, left: 20, right: 20, zIndex: 1200 }}>
+        <Box sx={{ 
+          display: 'flex',
+          justifyContent: 'flex-end',
+          gap: 1
+        }}>
+          <Collapse in={isSearchOpen} orientation="horizontal" sx={{ flexGrow: 1 }}>
+            <Box sx={{ 
+              display: 'flex',
+              backgroundColor: 'white',
+              borderRadius: 1,
+              boxShadow: 1,
+              mr: 1
+            }}>
+              <Autocomplete
+                onLoad={onAutocompleteLoad}
+                onPlaceChanged={onPlaceChanged}
+                style={{ flex: 1 }}
+              >
+                <TextField
+                  fullWidth
+                  placeholder="Search locations..."
+                  variant="outlined"
+                  size="small"
+                  InputProps={{
+                    startAdornment: (
+                      <InputAdornment position="start">
+                        <SearchIcon />
+                      </InputAdornment>
+                    ),
+                  }}
+                />
+              </Autocomplete>
+            </Box>
+          </Collapse>
+
+          <Box sx={{ 
+            display: 'flex',
+            backgroundColor: 'white',
+            borderRadius: 1,
+            boxShadow: 1
+          }}>
+            {!isSearchOpen && (
+              <IconButton 
+                size="small" 
+                onClick={() => setIsSearchOpen(true)}
+                sx={{ mx: 0.5 }}
+              >
+                <SearchIcon />
+              </IconButton>
+            )}
+            {isSearchOpen && (
+              <IconButton 
+                size="small" 
+                onClick={() => setIsSearchOpen(false)}
+                sx={{ mx: 0.5 }}
+              >
+                <CloseIcon />
+              </IconButton>
+            )}
+            <ToggleButtonGroup
+              value={activeLayers.aerial ? 'satellite' : 'map'}
+              exclusive
+              onChange={(e, v) => v !== null && onLayerToggle('aerial')}
+              size="small"
+              sx={{ 
+                '& .MuiToggleButton-root': {
+                  border: 'none',
+                  borderRadius: 0,
+                  padding: '4px 12px',
+                  textTransform: 'none',
+                  '&.Mui-selected': {
+                    backgroundColor: '#1976d2',
+                    color: 'white',
+                    '&:hover': {
+                      backgroundColor: '#1565c0'
+                    }
+                  }
+                }
+              }}
+            >
+              <ToggleButton value="map">
+                <MapIcon fontSize="small" />
+              </ToggleButton>
+              <ToggleButton value="satellite">
+                <SatelliteIcon fontSize="small" />
+              </ToggleButton>
+            </ToggleButtonGroup>
+          </Box>
+        </Box>
+      </Box>
 
       <GoogleMap
         mapContainerStyle={mapContainerStyle}
-        zoom={13}
         center={center}
+        zoom={17}
         options={options}
-        onLoad={onMapLoad}
-        onBoundsChanged={handleBoundsChanged}
-      >
-        {/* Leads Layer */}
-        {activeLayers.leads && (
-          <MarkerClusterer>
-            {(clusterer) =>
-              properties.map(property => (
-                <Marker
-                  key={property.id}
-                  position={{ lat: property.latitude, lng: property.longitude }}
-                  clusterer={clusterer}
-                  icon={{
-                    path: 'M -5,-5 L 5,-5 L 5,5 L -5,5 Z',  // Simple square shape
-                    fillColor: '#4CAF50',
-                    fillOpacity: 0.9,
-                    strokeColor: '#ffffff',
-                    strokeWeight: 2,
-                    scale: 1
-                  }}
-                  onClick={() => setSelectedMarker(property)}
-                />
-              ))
-            }
-          </MarkerClusterer>
-        )}
+        onLoad={onLoad}
+      />
 
-        {/* Solar Permits Layer */}
-        {activeLayers.solarPermits && (
-          <MarkerClusterer>
-            {(clusterer) =>
-              solarPermits.map(permit => (
-                <Marker
-                  key={permit.id}
-                  position={{ lat: permit.latitude, lng: permit.longitude }}
-                  clusterer={clusterer}
-                  icon={{
-                    path: 'M -5,-5 L 5,-5 L 5,5 L -5,5 Z',  // Simple square shape
-                    fillColor: '#FDD835',
-                    fillOpacity: 0.9,
-                    strokeColor: '#ffffff',
-                    strokeWeight: 2,
-                    scale: 1
-                  }}
-                  onClick={() => setSelectedMarker(permit)}
-                />
-              ))
-            }
-          </MarkerClusterer>
-        )}
-
-        {/* EV Charging Stations Layer */}
-        {activeLayers.evOwners && (
-          <MarkerClusterer>
-            {(clusterer) =>
-              chargingStations.map(station => (
-                <Marker
-                  key={station.id}
-                  position={{ lat: station.latitude, lng: station.longitude }}
-                  clusterer={clusterer}
-                  icon={{
-                    path: 'M -5,-5 L 5,-5 L 5,5 L -5,5 Z',  // Simple square shape
-                    fillColor: '#4CAF50',
-                    fillOpacity: 0.9,
-                    strokeColor: '#ffffff',
-                    strokeWeight: 2,
-                    scale: 1
-                  }}
-                  onClick={() => setSelectedMarker(station)}
-                />
-              ))
-            }
-          </MarkerClusterer>
-        )}
-
-        {/* Utility Boundaries Layer */}
-        {activeLayers.utilityBoundaries && utilityBoundaries && (
-          <Data
-            onLoad={layer => {
-              layer.addGeoJson(utilityBoundaries);
-              layer.setStyle({
-                fillColor: '#9C27B0',
-                fillOpacity: 0.2,
-                strokeColor: '#9C27B0',
-                strokeWeight: 2
-              });
+      {/* Info Window */}
+      {selectedFeature && infoWindowPosition && (
+        <Box
+          sx={{
+            position: 'absolute',
+            left: '50%',
+            top: '50%',
+            transform: 'translate(-50%, -100%)',
+            zIndex: 1000
+          }}
+        >
+          <Paper
+            elevation={3}
+            sx={{
+              p: 2,
+              minWidth: 200,
+              backgroundColor: 'rgba(255, 255, 255, 0.95)',
+              position: 'relative'
             }}
-          />
-        )}
-
-        {/* City Boundaries Layer */}
-        {activeLayers.cityBoundaries && demographicData?.cityBoundaries && (
-          <Data
-            onLoad={layer => {
-              layer.addGeoJson(demographicData.cityBoundaries);
-              layer.setStyle({
-                fillColor: '#00BCD4',
-                fillOpacity: 0.2,
-                strokeColor: '#00BCD4',
-                strokeWeight: 2
-              });
-            }}
-          />
-        )}
-
-        {/* Spanish Speakers Layer */}
-        {activeLayers.spanishSpeakers && demographicData?.spanishSpeakers && (
-          <Data
-            onLoad={layer => {
-              layer.addGeoJson(demographicData.spanishSpeakers);
-              layer.setStyle(feature => ({
-                fillColor: '#FF9800',
-                fillOpacity: feature.getProperty('spanishSpeakers') / feature.getProperty('totalPopulation') * 0.5,
-                strokeColor: '#FF9800',
-                strokeWeight: 1
-              }));
-            }}
-          />
-        )}
-
-        {/* Info Window for selected marker */}
-        {selectedMarker && (
-          <InfoWindow
-            position={{ lat: selectedMarker.latitude, lng: selectedMarker.longitude }}
-            onCloseClick={() => setSelectedMarker(null)}
           >
-            <Box sx={{ padding: '8px' }}>
-              <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1 }}>
-                {selectedMarker.address || selectedMarker.name}
-              </Typography>
-              {selectedMarker.assessed_value && (
-                <Typography variant="body2">
-                  Assessed Value: ${selectedMarker.assessed_value.toLocaleString()}
-                </Typography>
-              )}
-              {selectedMarker.year_built && (
-                <Typography variant="body2">
-                  Year Built: {selectedMarker.year_built}
-                </Typography>
-              )}
-              {selectedMarker.system_size && (
-                <Typography variant="body2">
-                  Solar System Size: {selectedMarker.system_size} kW
-                </Typography>
-              )}
-              {selectedMarker.ev_connector_types && (
-                <Typography variant="body2">
-                  Charger Types: {selectedMarker.ev_connector_types.join(', ')}
-                </Typography>
-              )}
-              {selectedMarker.additional_data && (
-                <>
-                  <Typography variant="body2">
-                    Zillow Price: {selectedMarker.additional_data.zillow_price}
-                  </Typography>
-                  <Typography variant="body2">
-                    Realtor Price: {selectedMarker.additional_data.realtor_price}
-                  </Typography>
-                </>
-              )}
-            </Box>
-          </InfoWindow>
-        )}
-      </GoogleMap>
+            <IconButton
+              size="small"
+              onClick={() => setSelectedFeature(null)}
+              sx={{
+                position: 'absolute',
+                right: 4,
+                top: 4
+              }}
+            >
+              <CloseIcon fontSize="small" />
+            </IconButton>
+            <Typography variant="h6" gutterBottom>{selectedFeature.name}</Typography>
+            <Typography variant="body2">Median Income: {selectedFeature.stats.medianIncome}</Typography>
+            <Typography variant="body2">Homeownership: {selectedFeature.stats.homeownership}</Typography>
+            <Typography variant="body2">Avg Home Value: {selectedFeature.stats.avgHomeValue}</Typography>
+          </Paper>
+        </Box>
+      )}
     </Box>
-  )
+  );
 }
 
-export default Map 
+Map.propTypes = {
+  activeLayers: PropTypes.object.isRequired,
+  onLayerToggle: PropTypes.func.isRequired
+};
+
+export default Map;

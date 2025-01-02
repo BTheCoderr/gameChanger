@@ -5,27 +5,22 @@ A full-stack application that displays various data layers on a Google Maps inte
 ## Current Deployment
 
 - Frontend: Deployed on Netlify
-- Backend: Deployed on Glitch
+- Backend: Deployed on Heroku
 
 ## Live URLs
 - Frontend: [Netlify App](https://game-changer-map.netlify.app)
-- Backend: [Glitch Server](https://desert-confirmed-sundial.glitch.me)
+- Backend: [Heroku API](https://game-changer-map-api-4530bd9b4dbb.herokuapp.com)
 
 ## Environment Setup
 
 ### Frontend (.env)
 ```
-VITE_API_URL=https://desert-confirmed-sundial.glitch.me
+VITE_API_URL=https://game-changer-map-api-4530bd9b4dbb.herokuapp.com
 VITE_GOOGLE_MAPS_API_KEY=your_key
-VITE_NREL_API_KEY=your_key
-VITE_CENSUS_API_KEY=your_key
-VITE_ATTOM_API_KEY=your_key
-VITE_MASS_DATA_API_KEY=your_key
 ```
 
-### Backend (.env on Glitch)
+### Backend (.env on Heroku)
 ```
-PORT=3000
 GOOGLE_MAPS_API_KEY=your_key
 NREL_API_KEY=your_key
 CENSUS_API_KEY=your_key
@@ -39,16 +34,16 @@ FRONTEND_URL=https://game-changer-map.netlify.app
 ### Frontend (Netlify)
 1. Connect your GitHub repository to Netlify
 2. Configure build settings:
-   - Build command: `npm run netlify-build`
+   - Build command: `npm run build`
    - Publish directory: `dist`
 3. Add environment variables in Netlify's dashboard
 4. Deploy!
 
-### Backend (Glitch)
-1. Create a new Glitch project
-2. Import the backend code
-3. Add environment variables in Glitch's `.env` file
-4. The server will automatically start
+### Backend (Heroku)
+1. Create a new Heroku app
+2. Connect your GitHub repository
+3. Add environment variables in Heroku's settings
+4. Deploy from GitHub main branch
 
 ## Available Data Layers
 - Leads
@@ -111,4 +106,3 @@ lsof -ti :3000 | xargs kill -9
 ### API Issues
 - Verify all API keys are correctly set in both frontend and backend .env files
 - Check CORS settings in backend if API calls fail
-- Ensure Glitch server is awake (it sleeps after inactivity) 
