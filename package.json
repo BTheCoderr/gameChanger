@@ -3,12 +3,16 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "engines": {
+    "node": "18.x"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
     "lint": "eslint .",
-    "netlify-build": "npm install && vite build"
+    "netlify-build": "npm install && vite build",
+    "heroku-postbuild": "cd server && npm install"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
